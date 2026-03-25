@@ -1,37 +1,17 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { Header } from '@/components/header';
 import { Footer } from '@/components/footer';
 import { CreatorCard } from '@/components/creator-card';
 import { creators, disciplines, getCreatorsByDiscipline } from '@/lib/creators-data';
 import { Button } from '@/components/ui/button';
 import { Empty, EmptyHeader, EmptyTitle, EmptyDescription, EmptyContent, EmptyMedia } from '@/components/ui/empty';
-import { Pagination, parsePaginationParams } from '@/components/pagination';
 import { Users } from 'lucide-react';
 
 export default function CreatorsPage() {
-  const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
   const [selectedDiscipline, setSelectedDiscipline] = useState<string>('All');
-
-  const { page, pageSize } = parsePaginationParams({
-    page: searchParams.get('page') ?? undefined,
-    pageSize: searchParams.get('pageSize') ?? undefined,
-  });
-
   const filteredCreators = getCreatorsByDiscipline(selectedDiscipline);
-  const totalCount = filteredCreators.length;
-  const paginatedCreators = filteredCreators.slice((page - 1) * pageSize, page * pageSize);
-
-  const handleDisciplineChange = (discipline: string) => {
-    setSelectedDiscipline(discipline);
-    const params = new URLSearchParams(searchParams.toString());
-    params.set('page', '1');
-    router.push(`${pathname}?${params.toString()}`, { scroll: false });
-  };
 
   return (
     <div className="min-h-screen flex flex-col bg-background">
@@ -61,7 +41,7 @@ export default function CreatorsPage() {
                     key={discipline}
                     variant={selectedDiscipline === discipline ? 'default' : 'outline'}
                     size="sm"
-                    onClick={() => handleDisciplineChange(discipline)}
+                    onClick={() => setSelectedDiscipline(discipline)}
                     className="transition-all"
                   >
                     {discipline}
@@ -75,21 +55,19 @@ export default function CreatorsPage() {
         {/* Creators Grid */}
         <section className="py-16 sm:py-24">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            {paginatedCreators.length > 0 ? (
+            {filteredCreators.length > 0 ? (
               <>
                 <div className="mb-8">
                   <p className="text-sm text-muted-foreground">
-                    {totalCount} creator{totalCount !== 1 ? 's' : ''} found
+                    Showing {filteredCreators.length} creator{filteredCreators.length !== 1 ? 's' : ''}
                   </p>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                  {paginatedCreators.map((creator) => (
+                  {filteredCreators.map((creator) => (
                     <CreatorCard key={creator.id} creator={creator} />
                   ))}
                 </div>
-
-                <Pagination total={totalCount} page={page} pageSize={pageSize} />
               </>
             ) : (
               <Empty className="min-h-[400px]">
@@ -105,7 +83,7 @@ export default function CreatorsPage() {
                 <EmptyContent>
                   <Button
                     variant="outline"
-                    onClick={() => handleDisciplineChange('All')}
+                    onClick={() => setSelectedDiscipline('All')}
                   >
                     View All Creators
                   </Button>

@@ -1,6 +1,5 @@
 'use client';
 
-import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { useState } from 'react';
 import Link from 'next/link';
 import { Header } from '@/components/header';
@@ -9,19 +8,10 @@ import { Button } from '@/components/ui/button';
 import { bounties, Bounty } from '@/lib/creators-data';
 import { ArrowRight, Filter, Calendar, DollarSign, Zap, Search } from 'lucide-react';
 import { Empty, EmptyHeader, EmptyTitle, EmptyDescription, EmptyContent, EmptyMedia } from '@/components/ui/empty';
-import { Pagination, parsePaginationParams } from '@/components/pagination';
 
 export default function BountiesPage() {
-  const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
   const [selectedDifficulty, setSelectedDifficulty] = useState('All');
   const [selectedCategory, setSelectedCategory] = useState('All');
-
-  const { page, pageSize } = parsePaginationParams({
-    page: searchParams.get('page') ?? undefined,
-    pageSize: searchParams.get('pageSize') ?? undefined,
-  });
 
   const difficulties = ['All', 'beginner', 'intermediate', 'advanced', 'expert'];
   const categories = ['All', 'Brand Strategy', 'Technical Writing', 'Content Creation', 'UX Research'];
@@ -31,15 +21,6 @@ export default function BountiesPage() {
     const categoryMatch = selectedCategory === 'All' || bounty.category === selectedCategory;
     return difficultyMatch && categoryMatch;
   });
-
-  const totalCount = filteredBounties.length;
-  const paginatedBounties = filteredBounties.slice((page - 1) * pageSize, page * pageSize);
-
-  const resetPage = () => {
-    const params = new URLSearchParams(searchParams.toString());
-    params.set('page', '1');
-    router.push(`${pathname}?${params.toString()}`, { scroll: false });
-  };
 
   const getDifficultyColor = (difficulty: string) => {
     const colors: Record<string, string> = {
@@ -157,7 +138,7 @@ export default function BountiesPage() {
                     {difficulties.map((difficulty) => (
                       <button
                         key={difficulty}
-                        onClick={() => { setSelectedDifficulty(difficulty); resetPage(); }}
+                        onClick={() => setSelectedDifficulty(difficulty)}
                         className={`px-4 py-2 rounded-lg font-medium transition-all capitalize ${
                           selectedDifficulty === difficulty
                             ? 'bg-primary text-primary-foreground'
@@ -179,7 +160,7 @@ export default function BountiesPage() {
                     {categories.map((category) => (
                       <button
                         key={category}
-                        onClick={() => { setSelectedCategory(category); resetPage(); }}
+                        onClick={() => setSelectedCategory(category)}
                         className={`px-4 py-2 rounded-lg font-medium transition-all ${
                           selectedCategory === category
                             ? 'bg-primary text-primary-foreground'
@@ -197,17 +178,13 @@ export default function BountiesPage() {
             {/* Results */}
             <div>
               <p className="text-sm text-muted-foreground mb-6">
-                {totalCount} bounti{totalCount !== 1 ? 'es' : 'y'} found
+                Showing {filteredBounties.length} bounties
               </p>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {paginatedBounties.map((bounty) => (
+                {filteredBounties.map((bounty) => (
                   <BountyCard key={bounty.id} bounty={bounty} />
                 ))}
               </div>
-
-              {paginatedBounties.length > 0 && (
-                <Pagination total={totalCount} page={page} pageSize={pageSize} />
-              )}
 
               {filteredBounties.length === 0 && (
                 <Empty className="min-h-[400px]">
@@ -226,7 +203,6 @@ export default function BountiesPage() {
                       onClick={() => {
                         setSelectedDifficulty('All');
                         setSelectedCategory('All');
-                        resetPage();
                       }}
                     >
                       Reset Filters
