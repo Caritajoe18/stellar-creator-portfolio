@@ -317,6 +317,8 @@ export interface Bounty {
   postedDate: Date;
   requiredSkills: string[];
   deliverables: string;
+  /** When set, only this user (client) may manage applications. Omit for open demo bounties. */
+  ownerUserId?: string | null;
 }
 
 export interface BountyApplication {
@@ -472,3 +474,7 @@ export const getBountiesByDifficulty = (difficulty: string): Bounty[] => {
   if (difficulty === 'All') return bounties;
   return bounties.filter(bounty => bounty.difficulty === difficulty);
 };
+
+export function getBountyById(id: string): Bounty | undefined {
+  return bounties.find((b) => b.id === id);
+}
