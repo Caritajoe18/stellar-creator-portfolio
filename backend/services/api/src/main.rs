@@ -1236,7 +1236,7 @@ async fn main() -> anyhow::Result<()> {
             .route("/api/uploads/{category}/{filename}", web::get().to(upload::serve_upload))
             .route("/api/uploads/{id}", web::delete().to(upload::delete_upload))
     })
-    .bind((host.as_str(), port))?
+    .bind((config.api_host.as_str(), config.api_port))?
     .run()
     .await;
 
