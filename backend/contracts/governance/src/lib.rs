@@ -82,12 +82,7 @@ impl GovernanceContract {
         true
     }
 
-    pub fn set_bounty_limits(
-        env: Env,
-        admin: Address,
-        min_budget: i128,
-        max_budget: i128,
-    ) -> bool {
+    pub fn set_bounty_limits(env: Env, admin: Address, min_budget: i128, max_budget: i128) -> bool {
         admin.require_auth();
 
         let mut config: GovernanceConfig = env
@@ -96,7 +91,10 @@ impl GovernanceContract {
             .get(&DataKey::Config)
             .expect("Not initialized");
 
-        assert!(admin == config.admin_address, "Only admin can update limits");
+        assert!(
+            admin == config.admin_address,
+            "Only admin can update limits"
+        );
         assert!(min_budget > 0, "Min budget must be positive");
         assert!(max_budget > min_budget, "Max must be greater than min");
 
@@ -136,8 +134,12 @@ impl GovernanceContract {
             voting_deadline: env.ledger().timestamp() + voting_period,
         };
 
-        env.storage().persistent().set(&DataKey::Proposal(counter), &proposal);
-        env.storage().persistent().set(&DataKey::ProposalCounter, &counter);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Proposal(counter), &proposal);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ProposalCounter, &counter);
         counter
     }
 
@@ -145,10 +147,7 @@ impl GovernanceContract {
         voter.require_auth();
 
         let vote_key = DataKey::Vote(proposal_id, voter.clone());
-        assert!(
-            !env.storage().persistent().has(&vote_key),
-            "Already voted"
-        );
+        assert!(!env.storage().persistent().has(&vote_key), "Already voted");
 
         let mut proposal: Proposal = env
             .storage()
@@ -168,7 +167,9 @@ impl GovernanceContract {
             proposal.no_votes += 1;
         }
 
-        env.storage().persistent().set(&DataKey::Proposal(proposal_id), &proposal);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Proposal(proposal_id), &proposal);
         env.storage().persistent().set(&vote_key, &true);
         true
     }
@@ -195,7 +196,9 @@ impl GovernanceContract {
 
         proposal.approved = proposal.yes_votes > proposal.no_votes;
         proposal.executed = true;
-        env.storage().persistent().set(&DataKey::Proposal(proposal_id), &proposal);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Proposal(proposal_id), &proposal);
         true
     }
 }

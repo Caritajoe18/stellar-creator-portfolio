@@ -1,6 +1,8 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, token::Client as TokenClient};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, token::Client as TokenClient, Address, Env,
+};
 
 #[derive(Clone, Copy, PartialEq)]
 #[contracttype]
@@ -73,8 +75,12 @@ impl EscrowContract {
             created_at: env.ledger().timestamp(),
         };
 
-        env.storage().persistent().set(&DataKey::Escrow(counter), &escrow);
-        env.storage().persistent().set(&DataKey::EscrowCounter, &counter);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Escrow(counter), &escrow);
+        env.storage()
+            .persistent()
+            .set(&DataKey::EscrowCounter, &counter);
 
         counter
     }
@@ -100,13 +106,22 @@ impl EscrowContract {
             "Unauthorized"
         );
         assert!(escrow.status == EscrowStatus::Active, "Escrow not active");
-        assert!(Self::can_release(env.clone(), escrow_id), "Release condition not met");
+        assert!(
+            Self::can_release(env.clone(), escrow_id),
+            "Release condition not met"
+        );
 
         let token_client = TokenClient::new(&env, &escrow.token);
-        token_client.transfer(&env.current_contract_address(), &escrow.payee, &escrow.amount);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &escrow.payee,
+            &escrow.amount,
+        );
 
         escrow.status = EscrowStatus::Released;
-        env.storage().persistent().set(&DataKey::Escrow(escrow_id), &escrow);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Escrow(escrow_id), &escrow);
 
         true
     }
@@ -122,10 +137,16 @@ impl EscrowContract {
         assert!(escrow.status == EscrowStatus::Active, "Escrow not active");
 
         let token_client = TokenClient::new(&env, &escrow.token);
-        token_client.transfer(&env.current_contract_address(), &escrow.payer, &escrow.amount);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &escrow.payer,
+            &escrow.amount,
+        );
 
         escrow.status = EscrowStatus::Refunded;
-        env.storage().persistent().set(&DataKey::Escrow(escrow_id), &escrow);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Escrow(escrow_id), &escrow);
 
         true
     }

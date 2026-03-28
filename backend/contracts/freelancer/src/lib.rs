@@ -85,8 +85,7 @@ impl FreelancerContract {
 
         let total = (profile.rating as u64) * (profile.total_rating_count as u64);
         profile.total_rating_count += 1;
-        profile.rating =
-            ((total + new_rating as u64) / profile.total_rating_count as u64) as u32;
+        profile.rating = ((total + new_rating as u64) / profile.total_rating_count as u64) as u32;
 
         env.storage().persistent().set(&key, &profile);
         true
