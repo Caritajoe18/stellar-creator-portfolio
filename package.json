@@ -17,7 +17,9 @@
     "backend:clippy": "cd backend && rustup component add clippy && cargo clippy --workspace --all-targets --all-features -- -D warnings",
     "smart-contract:clippy": "cd backend/contracts && rustup component add clippy && cargo clippy --workspace --all-targets --all-features -- -D warnings",
     "cli-checks": "pnpm run frontend:orbit-check && pnpm run backend:clippy && pnpm run smart-contract:clippy",
+    "check:types": "tsc --noEmit",
     "load:smoke": "k6 run load-tests/smoke.test.js",
+
     "load:stress": "k6 run load-tests/stress.test.js",
     "load:soak": "k6 run load-tests/soak.test.js",
     "load:spike": "k6 run load-tests/spike.test.js",

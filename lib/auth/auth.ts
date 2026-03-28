@@ -1,4 +1,5 @@
-import NextAuth, { NextAuthOptions, Session, User } from 'next-auth';
+import NextAuth, { NextAuthOptions, Session, User, DefaultSession, DefaultUser } from 'next-auth';
+import { JWT } from 'next-auth/jwt';
 import CredentialsProvider from 'next-auth/providers/credentials';
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
@@ -9,19 +10,25 @@ declare module 'next-auth' {
   interface Session {
     user: {
       id: string;
-      email: string;
-      name?: string | null;
       role: string;
-    } & Session['user'];
+    } & DefaultSession['user'];
   }
 
-  interface User {
-    id: string;
-    email: string;
-    name?: string | null;
+  interface User extends DefaultUser {
     role: string;
   }
 }
+
+declare module 'next-auth/jwt' {
+  interface JWT {
+    id?: string;
+    role?: string;
+  }
+}
+
+
+
+
 
 export const authOptions: NextAuthOptions = {
   providers: [
@@ -31,7 +38,7 @@ export const authOptions: NextAuthOptions = {
         email: { label: 'Email', type: 'email', placeholder: 'you@example.com' },
         password: { label: 'Password', type: 'password' },
       },
-      async authorize(credentials, req) {
+      async authorize(credentials) {
         if (!credentials?.email || !credentials?.password) {
           throw new Error('Email and password are required');
         }
@@ -76,10 +83,11 @@ export const authOptions: NextAuthOptions = {
   },
   pages: {
     signIn: '/auth/login',
-    signUp: '/auth/register',
+    // signUp is not a standard NextAuth page, it's handled by our custom /auth/register
   },
+
   callbacks: {
-    async jwt({ token, user, trigger, session }) {
+    async jwt({ token, user, trigger, session }: { token: JWT; user?: User; trigger?: string; session?: any }) {
       if (user) {
         token.id = user.id;
         token.role = user.role;
@@ -92,7 +100,7 @@ export const authOptions: NextAuthOptions = {
       
       return token;
     },
-    async session({ session, token }) {
+    async session({ session, token }: { session: any; token: JWT }) {
       if (session.user) {
         session.user.id = token.id as string;
         session.user.role = token.role as string;
@@ -104,15 +112,15 @@ export const authOptions: NextAuthOptions = {
     async createUser({ user }) {
       console.log('New user created:', user.email);
     },
-    async signIn({ user, account }) {
+    async signIn({ user, account }: { user: User; account: any }) {
       console.log('User signed in:', user.email, 'via', account?.provider);
     },
   },
 };
 
-export const {
-  handlers: { GET, POST },
-  auth,
-  signIn,
-  signOut,
-} = NextAuth(authOptions);
+
+
+// authOptions is exported directly at its definition above.
+
+
+
