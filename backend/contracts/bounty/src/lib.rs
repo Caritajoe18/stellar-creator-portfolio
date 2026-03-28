@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Vec};
 
 #[derive(Clone, Copy, PartialEq)]
 #[contracttype]
@@ -42,6 +42,15 @@ pub enum DataKey {
     Bounty(u64),
     Application(u64),
     SelectedFreelancer(u64),
+    BountyApplications(u64), // Maps bounty_id -> Vec<application_id>
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct ApplicationPage {
+    pub application_ids: Vec<u64>,
+    pub total: u64,
+    pub has_more: bool,
 }
 
 #[contract]
@@ -120,6 +129,17 @@ impl BountyContract {
         env.storage().persistent().set(&DataKey::Application(counter), &application);
         env.storage().persistent().set(&DataKey::AppCounter, &counter);
 
+        // Track application ID under the bounty
+        let mut app_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::BountyApplications(bounty_id))
+            .unwrap_or(Vec::new(&env));
+        app_ids.push_back(counter);
+        env.storage()
+            .persistent()
+            .set(&DataKey::BountyApplications(bounty_id), &app_ids);
+
         counter
     }
 
@@ -128,6 +148,38 @@ impl BountyContract {
             .persistent()
             .get(&DataKey::Application(application_id))
             .expect("Application not found")
+    }
+
+    /// List application IDs for a bounty with pagination.
+    /// Returns a page of application IDs, total count, and whether there are more.
+    pub fn get_bounty_applications(
+        env: Env,
+        bounty_id: u64,
+        offset: u32,
+        limit: u32,
+    ) -> ApplicationPage {
+        let all_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::BountyApplications(bounty_id))
+            .unwrap_or(Vec::new(&env));
+
+        let total: u64 = all_ids.len() as u64;
+        let start_u32 = offset.min(total as u32);
+        let end_u32 = (offset.saturating_add(limit)).min(total as u32);
+
+        let mut page_ids = Vec::new(&env);
+        let mut i = start_u32;
+        while i < end_u32 {
+            page_ids.push_back(all_ids.get(i).unwrap());
+            i += 1;
+        }
+
+        ApplicationPage {
+            application_ids: page_ids,
+            total,
+            has_more: (end_u32 as u64) < total,
+        }
     }
 
     pub fn select_freelancer(env: Env, bounty_id: u64, application_id: u64) -> bool {
@@ -254,5 +306,65 @@ mod tests {
         assert_eq!(app_id, 1);
         let application = client.get_application(&app_id);
         assert_eq!(application.freelancer, freelancer);
+    }
+
+    #[test]
+    fn test_get_bounty_applications_pagination() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(BountyContract, ());
+        let client = BountyContractClient::new(&env, &contract_id);
+
+        let creator = Address::generate(&env);
+        let bounty_id = client.create_bounty(
+            &creator,
+            &String::from_str(&env, "Test Bounty"),
+            &String::from_str(&env, "Test Description"),
+            &5000i128,
+            &100u64,
+        );
+
+        // Apply with 3 different freelancers
+        for i in 0..3 {
+            let freelancer = Address::generate(&env);
+            client.apply_for_bounty(
+                &bounty_id,
+                &freelancer,
+                &String::from_str(&env, "Proposal"),
+                &(4000i128 + i),
+                &30u64,
+            );
+        }
+
+        // Get all applications
+        let page0 = client.get_bounty_applications(&bounty_id, &0, &10);
+        assert_eq!(page0.total, 3);
+        assert_eq!(page0.application_ids.len(), 3);
+        assert!(!page0.has_more);
+
+        // Get first 2 applications (page 0, limit 2)
+        let page = client.get_bounty_applications(&bounty_id, &0, &2);
+        assert_eq!(page.total, 3);
+        assert_eq!(page.application_ids.len(), 2);
+        assert!(page.has_more);
+
+        // Get last application (page 1, limit 2)
+        let page2 = client.get_bounty_applications(&bounty_id, &2, &2);
+        assert_eq!(page2.total, 3);
+        assert_eq!(page2.application_ids.len(), 1);
+        assert!(!page2.has_more);
+
+        // Empty bounty returns empty page
+        let empty_bounty_id = client.create_bounty(
+            &creator,
+            &String::from_str(&env, "Empty Bounty"),
+            &String::from_str(&env, "No apps"),
+            &1000i128,
+            &50u64,
+        );
+        let empty_page = client.get_bounty_applications(&empty_bounty_id, &0, &10);
+        assert_eq!(empty_page.total, 0);
+        assert_eq!(empty_page.application_ids.len(), 0);
+        assert!(!empty_page.has_more);
     }
 }
