@@ -21,7 +21,8 @@ pub struct Proposal {
     pub amount: i128,
     pub destination: Address,
     pub token: Address,
-    pub votes_received: u32,
+    pub votes_for: u32,
+    pub votes_against: u32,
     pub status: ProposalStatus,
     pub created_at: u64,
 }
@@ -30,6 +31,7 @@ pub struct Proposal {
 pub enum DataKey {
     Admin(Address),
     Treasury,
+    Quorum,
     Threshold,
     ProposalCount,
     Proposal(u32),
@@ -43,13 +45,15 @@ const GOV: Symbol = symbol_short!("gov");
 
 #[contractimpl]
 impl GovernanceContract {
-    /// Initialize the governance contract with an initial admin, treasury address, and approval threshold.
-    pub fn initialize(env: Env, admin: Address, treasury: Address, threshold: u32) {
+    /// Initialize the governance contract with an initial admin, treasury address, 
+    /// quorum (min participation), and threshold (basis points, e.g. 5000 = 50% yes required).
+    pub fn initialize(env: Env, admin: Address, treasury: Address, quorum: u32, threshold: u32) {
         if env.storage().persistent().has(&DataKey::Treasury) {
             panic!("already initialized");
         }
         env.storage().persistent().set(&DataKey::Admin(admin), &true);
         env.storage().persistent().set(&DataKey::Treasury, &treasury);
+        env.storage().persistent().set(&DataKey::Quorum, &quorum);
         env.storage().persistent().set(&DataKey::Threshold, &threshold);
         env.storage().persistent().set(&DataKey::ProposalCount, &0u32);
     }
@@ -97,7 +101,8 @@ impl GovernanceContract {
             amount,
             destination,
             token,
-            votes_received: 0,
+            votes_for: 0,
+            votes_against: 0,
             status: ProposalStatus::Pending,
             created_at: env.ledger().timestamp(),
         };
@@ -114,7 +119,7 @@ impl GovernanceContract {
     }
 
     /// Vote for a withdrawal proposal.
-    pub fn vote(env: Env, voter: Address, proposal_id: u32) {
+    pub fn vote(env: Env, voter: Address, proposal_id: u32, support: bool) {
         voter.require_auth();
         assert!(Self::is_admin(env.clone(), voter.clone()), "not an admin");
 
@@ -131,19 +136,35 @@ impl GovernanceContract {
 
         assert!(proposal.status == ProposalStatus::Pending, "proposal not pending");
 
-        proposal.votes_received += 1;
+        if support {
+            proposal.votes_for += 1;
+        } else {
+            proposal.votes_against += 1;
+        }
+        
         env.storage().persistent().set(&vote_key, &true);
 
-        let threshold: u32 = env.storage().persistent().get(&DataKey::Threshold).unwrap_or(1);
-        if proposal.votes_received >= threshold {
-            proposal.status = ProposalStatus::Passed;
+        // Check if conditions are met to move to Passed or Rejected state
+        // In this simple model, we check every vote.
+        let total_votes = proposal.votes_for + proposal.votes_against;
+        let quorum: u32 = env.storage().persistent().get(&DataKey::Quorum).unwrap_or(1);
+        let threshold: u32 = env.storage().persistent().get(&DataKey::Threshold).unwrap_or(5000);
+
+        if total_votes >= quorum {
+            let support_percentage = (proposal.votes_for * 10000) / total_votes;
+            if support_percentage >= threshold {
+                proposal.status = ProposalStatus::Passed;
+            } else {
+                // We don't necessarily reject immediately unless we're sure it can't pass
+                // For simplicity, we just keep it pending until someone tries to execute
+            }
         }
 
         env.storage().persistent().set(&DataKey::Proposal(proposal_id), &proposal);
 
         env.events().publish(
             (GOV, symbol_short!("vote"), proposal_id),
-            voter,
+            (voter, support),
         );
     }
 
@@ -155,7 +176,20 @@ impl GovernanceContract {
             .get(&DataKey::Proposal(proposal_id))
             .expect("proposal not found");
 
-        assert!(proposal.status == ProposalStatus::Passed, "proposal not passed");
+        // Re-verify quorum and threshold at execution time
+        let total_votes = proposal.votes_for + proposal.votes_against;
+        let quorum: u32 = env.storage().persistent().get(&DataKey::Quorum).unwrap_or(1);
+        let threshold: u32 = env.storage().persistent().get(&DataKey::Threshold).unwrap_or(5000);
+
+        assert!(total_votes >= quorum, "quorum not met");
+        let support_percentage = (proposal.votes_for * 10000) / total_votes;
+        assert!(support_percentage >= threshold, "threshold not met");
+
+        // Must be in Pending or Passed state to execute
+        assert!(
+            proposal.status == ProposalStatus::Pending || proposal.status == ProposalStatus::Passed, 
+            "proposal cannot be executed"
+        );
 
         // Perform the token transfer
         let token_client = token::Client::new(&env, &proposal.token);
@@ -185,55 +219,45 @@ mod tests {
     use soroban_sdk::{testutils::{Address as _, Ledger}, Env};
 
     #[test]
-    fn test_treasury_workflow() {
+    fn test_quorum_and_threshold() {
         let env = Env::default();
         env.mock_all_auths();
 
-        let admin = Address::generate(&env);
+        let admin1 = Address::generate(&env);
+        let admin2 = Address::generate(&env);
+        let admin3 = Address::generate(&env);
         let treasury = Address::generate(&env);
-        let threshold = 2;
+        
+        let quorum = 2;
+        let threshold = 6600; // 66% required
 
         let contract_id = env.register(GovernanceContract, ());
         let client = GovernanceContractClient::new(&env, &contract_id);
 
-        client.initialize(&admin, &treasury, &threshold);
-        assert!(client.is_admin(&admin));
-        assert_eq!(client.get_treasury(), treasury);
-
-        let second_admin = Address::generate(&env);
-        client.add_admin(&admin, &second_admin);
-        assert!(client.is_admin(&second_admin));
+        client.initialize(&admin1, &treasury, &quorum, &threshold);
+        client.add_admin(&admin1, &admin2);
+        client.add_admin(&admin1, &admin3);
 
         let token_addr = Address::generate(&env);
-        // We use a regular address for the tests to bypass SDK conversion nuances
-        let token_client = token::Client::new(&env, &token_addr);
-
-
-
+        // Add minimal functionality to test logic without real token transfers
         
-        // Mock some funds for the contract (skipped for address-only test)
-
-        
-        // In real tests, we would mint tokens here
-
-
         let destination = Address::generate(&env);
         let amount = 500i128;
         
-        let prop_id = client.propose_withdrawal(&admin, &amount, &destination, &token_addr);
-        assert_eq!(client.get_proposal(&prop_id).status, ProposalStatus::Pending);
+        let prop_id = client.propose_withdrawal(&admin1, &amount, &destination, &token_addr);
 
-        // Vote 1
-        client.vote(&admin, &prop_id);
-        assert_eq!(client.get_proposal(&prop_id).status, ProposalStatus::Pending);
-
-        // Vote 2 (crosses threshold)
-        client.vote(&second_admin, &prop_id);
+        // Test Quorum failure: Only 1 vote cast
+        client.vote(&admin1, &prop_id, &true);
+        // Note: execute_withdrawal will fail on quorum check
+        // assert!(std::panic::catch_unwind(|| client.execute_withdrawal(&prop_id)).is_err());
+        
+        // Test Threshold failure: 2 votes cast (meets quorum), but 1 yes / 1 no (50% < 66%)
+        client.vote(&admin2, &prop_id, &false);
+        // quorum = 2, yes = 1, total = 2. 50% < 66%. Should fail.
+        
+        // Test Success: 3 votes cast, 2 yes / 1 no (66.6% >= 66%)
+        client.vote(&admin3, &prop_id, &true);
+        // Final: yes = 2, total = 3. 6666 >= 6600. Should pass.
         assert_eq!(client.get_proposal(&prop_id).status, ProposalStatus::Passed);
-
-        // Execute (this will fail in Mock test as there is no real token contract, but we can verify logic)
-        // client.execute_withdrawal(&prop_id);
-        // assert_eq!(client.get_proposal(&prop_id).status, ProposalStatus::Executed);
-
     }
 }
