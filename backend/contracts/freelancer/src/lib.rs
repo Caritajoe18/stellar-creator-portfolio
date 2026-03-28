@@ -214,7 +214,7 @@ impl FreelancerContract {
 
         // Emit EarningsUpdated event
         env.events().publish(
-            (FREELANCER, symbol_short!("earnings"), freelancer),
+            (FL, symbol_short!("earnings"), freelancer),
             (amount, new_total),
         );
 
@@ -288,16 +288,11 @@ impl FreelancerContract {
         // contract recognizes as admins can verify freelancers. If no governance
         // contract is configured, fall back to the legacy behaviour (auth only).
         if let Some(gov) = env.storage().persistent().get::<DataKey, Address>(&DataKey::Governance) {
-                // Call governance contract's `is_admin` entrypoint. If it returns
-                // false, reject. We expect the governance contract to expose a
-                // method named `is_admin` that takes an Address and returns bool.
-                // If the governance contract is not present or doesn't expose the
-                // method, this will trap at runtime — that's intentional to make
-                // misconfiguration visible.
-                let is_admin: bool = env.invoke_contract(&gov, &symbol_short!("is_admin"), (admin.clone(),));
-                if !is_admin {
-                    panic!("Admin role required");
-                }
+            // Call governance contract's `is_admin` entrypoint. If it returns
+            // false, reject. We expect the governance contract to expose a
+            // method named `is_admin` that takes an Address and returns bool.
+            if !env.invoke_contract::<bool>(&gov, &symbol_short!("is_admin"), (admin.clone(),)) {
+                panic!("Admin role required");
             }
         }
 
