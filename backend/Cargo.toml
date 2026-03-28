@@ -27,6 +27,7 @@ soroban-sdk = { version = "23.5.2" }
 # Web & HTTP
 actix-web = "4.4"
 actix-rt = "2.9"
+tracing-actix-web = "0.7"
 tokio = { version = "1.35", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -61,6 +62,13 @@ dotenvy = "0.15"
 # Metrics
 actix-web-prom = "0.9"
 prometheus = "0.13"
+
+# Tracing / OpenTelemetry
+opentelemetry = { version = "0.24", features = ["metrics", "logs"] }
+opentelemetry_sdk = { version = "0.24", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.24", features = ["grpc-tonic"] }
+opentelemetry-semantic-conventions = "0.15"
+tracing-opentelemetry = "0.25"
 
 # OpenAPI / Swagger
 utoipa = { version = "4", features = ["actix_extras"] }

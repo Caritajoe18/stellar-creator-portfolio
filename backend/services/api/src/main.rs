@@ -3,6 +3,12 @@ use deadpool_redis::{redis::AsyncCommands, Config as RedisConfig, Pool as RedisP
 use serde::{Deserialize, Serialize};
 mod metrics;
 
+use opentelemetry::KeyValue;
+use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_sdk::{runtime, trace::{self, TracerProvider}, Resource};
+use tracing_opentelemetry::OpenTelemetryLayer;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, Registry};
+
 use actix_cors::Cors;
 use actix_web::{
     dev::Server, http::StatusCode, middleware, web, App, HttpResponse, HttpServer, ResponseError,
@@ -1155,10 +1161,36 @@ pub struct ApiDoc;
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "info,stellar_api=debug".to_string()),
+    // Initialize OpenTelemetry
+    let tracer_provider = opentelemetry_otlp::new_pipeline()
+        .tracing()
+        .with_exporter(
+            opentelemetry_otlp::new_exporter()
+                .tonic()
+                .with_endpoint(std::env::var("OTLP_ENDPOINT").unwrap_or_else(|_| "http://jaeger:4317".to_string())),
         )
+        .with_trace_config(
+            trace::Config::default().with_resource(Resource::new(vec![KeyValue::new(
+                opentelemetry_semantic_conventions::resource::SERVICE_NAME,
+                "stellar-api",
+            )])),
+        )
+        .install_batch(runtime::Tokio)
+        .expect("Failed to initialize tracer");
+
+    let tracer = tracer_provider.tracer("stellar-api");
+    let telemetry = OpenTelemetryLayer::new(tracer);
+    
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,stellar_api=debug"));
+
+    let formatting_layer = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stdout);
+
+    Registry::default()
+        .with(env_filter)
+        .with(telemetry)
+        .with(formatting_layer)
         .init();
 
     let port = std::env::var("API_PORT")
@@ -1207,7 +1239,7 @@ async fn main() -> anyhow::Result<()> {
             .app_data(business_metrics.clone())
             .wrap(prometheus.clone())
             .wrap(Cors::permissive())
-            .wrap(middleware::Logger::default())
+            .wrap(tracing_actix_web::TracingLogger::default())
             .wrap(middleware::NormalizePath::trim())
             .service(
                 SwaggerUi::new("/swagger-ui/{_:.*}").url("/api-docs/openapi.json", openapi.clone()),
