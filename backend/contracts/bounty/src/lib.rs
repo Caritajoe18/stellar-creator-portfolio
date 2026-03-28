@@ -2,6 +2,13 @@
 
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Symbol, Vec};
 
+#[derive(Clone)]
+#[contracttype]
+pub enum ReleaseCondition {
+    OnCompletion,
+    Timelock(u64),
+}
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 #[contracttype]
 pub enum BountyStatus {
@@ -33,6 +40,8 @@ pub struct Bounty {
     pub deadline: u64,
     pub status: BountyStatus,
     pub created_at: u64,
+    pub token: Address,
+    pub escrow_id: Option<u64>,
 }
 
 #[contracttype]
@@ -45,6 +54,7 @@ pub struct BountyApplication {
     pub proposed_budget: i128,
     pub timeline: u64,
     pub created_at: u64,
+    pub is_withdrawn: bool,
 }
 
 #[contracttype]
@@ -100,6 +110,9 @@ pub enum DataKey {
     // Persistent storage - application tracking for rate limiting
     BountyApplications(u64),
     ApplicationsPerFreelancer(Address),
+    // Config
+    Deployer,
+    EscrowContract,
 }
 
 #[contract]
@@ -133,6 +146,7 @@ impl BountyContract {
         description: String,
         budget: i128,
         deadline: u64,
+        token: Address,
     ) -> u64 {
         creator.require_auth();
 
@@ -158,6 +172,8 @@ impl BountyContract {
             deadline,
             status: BountyStatus::Open,
             created_at: env.ledger().timestamp(),
+            token: token.clone(),
+            escrow_id: None,
         };
 
         // Persistent storage for permanent bounty record
@@ -176,6 +192,34 @@ impl BountyContract {
         );
 
         counter
+    }
+
+    /// Registers the trusted escrow contract address.
+    ///
+    /// Only the deployer (first caller) may set the escrow contract address.
+    pub fn set_escrow_contract(env: Env, setter: Address, escrow: Address) -> bool {
+        setter.require_auth();
+
+        let maybe_deployer: Option<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Deployer);
+
+        if let Some(deployer) = maybe_deployer {
+            if deployer != setter {
+                panic!("Only deployer may set escrow contract");
+            }
+        } else {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Deployer, &setter);
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::EscrowContract, &escrow);
+
+        true
     }
 
     /// Retrieves bounty details by ID.
@@ -252,6 +296,7 @@ impl BountyContract {
             proposed_budget,
             timeline,
             created_at: env.ledger().timestamp(),
+            is_withdrawn: false,
         };
 
         // Persistent storage for permanent application record
@@ -299,6 +344,85 @@ impl BountyContract {
             .persistent()
             .get(&DataKey::Application(application_id))
             .expect("Application not found")
+    }
+
+    /// Allows a freelancer to withdraw their own pending application.
+    ///
+    /// Only the original applicant may withdraw, and only while the bounty is
+    /// still `Open` (i.e. before a freelancer has been selected / bounty moved
+    /// to `InProgress`). The application record is marked `is_withdrawn = true`
+    /// rather than deleted so that on-chain history is preserved.
+    ///
+    /// # Parameters
+    /// - `env`: Soroban environment.
+    /// - `application_id`: ID of the application to withdraw.
+    /// - `freelancer`: Address of the applicant (must authenticate).
+    ///
+    /// # Returns
+    /// - `bool`: Always `true` on success.
+    ///
+    /// # Errors
+    /// - Panics with "Application not found" if `application_id` doesn't exist.
+    /// - Panics with "Not the application owner" if `freelancer` is not the
+    ///   original applicant.
+    /// - Panics with "Application already withdrawn" if already withdrawn.
+    /// - Panics with "Bounty not found" if the referenced bounty doesn't exist.
+    /// - Panics with "Cannot withdraw after freelancer has been selected" if the
+    ///   bounty is no longer `Open`.
+    ///
+    /// # State Changes
+    /// - Sets `application.is_withdrawn = true` on the stored application record.
+    pub fn withdraw_application(
+        env: Env,
+        application_id: u64,
+        freelancer: Address,
+    ) -> bool {
+        freelancer.require_auth();
+
+        // Load and validate the application
+        let mut application: BountyApplication = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Application(application_id))
+            .expect("Application not found");
+
+        // Ownership check — only the submitting freelancer may withdraw
+        assert!(
+            application.freelancer == freelancer,
+            "Not the application owner"
+        );
+
+        // Idempotency guard — prevent double-withdrawal
+        assert!(
+            !application.is_withdrawn,
+            "Application already withdrawn"
+        );
+
+        // State guard — cannot withdraw once a freelancer has been selected
+        let bounty: Bounty = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Bounty(application.bounty_id))
+            .expect("Bounty not found");
+
+        assert!(
+            bounty.status == BountyStatus::Open,
+            "Cannot withdraw after freelancer has been selected"
+        );
+
+        // Mark as withdrawn and persist
+        application.is_withdrawn = true;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Application(application_id), &application);
+
+        // Emit ApplicationWithdrawn event
+        env.events().publish(
+            (Symbol::new(&env, "app_withdraw"), application.bounty_id, application_id),
+            &freelancer,
+        );
+
+        true
     }
 
     /// Bounty creator selects a freelancer application.
@@ -349,16 +473,37 @@ impl BountyContract {
             "Application does not match bounty"
         );
 
+        let escrow_contract: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::EscrowContract)
+            .expect("Escrow contract not configured");
+
+        let escrow_id: u64 = env.invoke_contract(
+            &escrow_contract,
+            &soroban_sdk::symbol_short!("deposit"),
+            (
+                bounty.creator.clone(),
+                application.freelancer.clone(),
+                bounty.budget,
+                bounty.token.clone(),
+                ReleaseCondition::OnCompletion,
+            ),
+        );
+
         // Use instance storage for active workflow state
         env.storage().instance().set(
             &DataKey::SelectedFreelancer(bounty_id),
             &application.freelancer,
         );
 
-        bounty.status = BountyStatus::InProgress;
+        let mut updated_bounty = bounty;
+        updated_bounty.status = BountyStatus::InProgress;
+        updated_bounty.escrow_id = Some(escrow_id);
+        
         env.storage()
             .persistent()
-            .set(&DataKey::Bounty(bounty_id), &bounty);
+            .set(&DataKey::Bounty(bounty_id), &updated_bounty);
 
         true
     }
@@ -442,10 +587,25 @@ impl BountyContract {
         // Note: Work submission tracking can be added via separate function
         // For now, we allow completion without requiring prior submission
 
-        bounty.status = BountyStatus::Completed;
+        if let Some(escrow_id) = bounty.escrow_id {
+            let escrow_contract: Address = env
+                .storage()
+                .persistent()
+                .get(&DataKey::EscrowContract)
+                .expect("Escrow contract not configured");
+                
+            env.invoke_contract::<bool>(
+                &escrow_contract,
+                &soroban_sdk::symbol_short!("release_funds"),
+                (escrow_id, bounty.creator.clone()),
+            );
+        }
+
+        let mut updated_bounty = bounty;
+        updated_bounty.status = BountyStatus::Completed;
         env.storage()
             .persistent()
-            .set(&DataKey::Bounty(bounty_id), &bounty);
+            .set(&DataKey::Bounty(bounty_id), &updated_bounty);
 
         true
     }
@@ -836,12 +996,16 @@ mod tests {
         let client = BountyContractClient::new(&env, &contract_id);
 
         let creator = Address::generate(&env);
+        let token = Address::generate(&env);
+        let escrow = env.register(MockEscrowContract, ());
+        client.set_escrow_contract(&creator, &escrow);
         let bounty_id = client.create_bounty(
             &creator,
             &String::from_str(&env, "Test Bounty"),
             &String::from_str(&env, "Test Description"),
             &5000i128,
             &100u64,
+            &token,
         );
 
         assert_eq!(bounty_id, 1);
@@ -858,6 +1022,9 @@ mod tests {
         let client = BountyContractClient::new(&env, &contract_id);
 
         let creator = Address::generate(&env);
+        let token = Address::generate(&env);
+        let escrow = env.register(MockEscrowContract, ());
+        client.set_escrow_contract(&creator, &escrow);
         let freelancer = Address::generate(&env);
 
         let bounty_id = client.create_bounty(
@@ -866,6 +1033,7 @@ mod tests {
             &String::from_str(&env, "Test Description"),
             &5000i128,
             &100u64,
+            &token,
         );
 
         let app_id = client.apply_for_bounty(
@@ -890,6 +1058,9 @@ mod tests {
         let client = BountyContractClient::new(&env, &contract_id);
 
         let creator = Address::generate(&env);
+        let token = Address::generate(&env);
+        let escrow = env.register(MockEscrowContract, ());
+        client.set_escrow_contract(&creator, &escrow);
         let freelancer = Address::generate(&env);
 
         let bounty_id = client.create_bounty(
@@ -900,6 +1071,7 @@ mod tests {
 
             &5000i128,
             &100u64,
+            &token,
         );
 
         let app_id = client.apply_for_bounty(
@@ -934,6 +1106,9 @@ mod tests {
         let client = BountyContractClient::new(&env, &contract_id);
 
         let creator = Address::generate(&env);
+        let token = Address::generate(&env);
+        let escrow = env.register(MockEscrowContract, ());
+        client.set_escrow_contract(&creator, &escrow);
         let freelancer = Address::generate(&env);
 
         let bounty_id = client.create_bounty(
@@ -942,6 +1117,7 @@ mod tests {
             &String::from_str(&env, "Test Description"),
             &5000i128,
             &100u64,
+            &token,
         );
 
         let app_id = client.apply_for_bounty(
@@ -979,6 +1155,9 @@ mod tests {
         let client = BountyContractClient::new(&env, &contract_id);
 
         let creator = Address::generate(&env);
+        let token = Address::generate(&env);
+        let escrow = env.register(MockEscrowContract, ());
+        client.set_escrow_contract(&creator, &escrow);
         let freelancer = Address::generate(&env);
 
         let bounty_id = client.create_bounty(
@@ -987,6 +1166,7 @@ mod tests {
             &String::from_str(&env, "Test Description"),
             &5000i128,
             &100u64,
+            &token,
         );
 
         let app_id = client.apply_for_bounty(
@@ -1023,6 +1203,9 @@ mod tests {
         let client = BountyContractClient::new(&env, &contract_id);
 
         let creator = Address::generate(&env);
+        let token = Address::generate(&env);
+        let escrow = env.register(MockEscrowContract, ());
+        client.set_escrow_contract(&creator, &escrow);
         let freelancer = Address::generate(&env);
         let random = Address::generate(&env);
 
@@ -1032,6 +1215,7 @@ mod tests {
             &String::from_str(&env, "Test Description"),
             &5000i128,
             &100u64,
+            &token,
         );
 
         let app_id = client.apply_for_bounty(
@@ -1060,6 +1244,9 @@ mod tests {
         let client = BountyContractClient::new(&env, &contract_id);
 
         let creator = Address::generate(&env);
+        let token = Address::generate(&env);
+        let escrow = env.register(MockEscrowContract, ());
+        client.set_escrow_contract(&creator, &escrow);
         let freelancer = Address::generate(&env);
 
         let bounty_id = client.create_bounty(
@@ -1068,6 +1255,7 @@ mod tests {
             &String::from_str(&env, "Test Description"),
             &5000i128,
             &100u64,
+            &token,
         );
 
         let app_id = client.apply_for_bounty(
@@ -1117,6 +1305,9 @@ mod tests {
         let client = BountyContractClient::new(&env, &contract_id);
 
         let creator = Address::generate(&env);
+        let token = Address::generate(&env);
+        let escrow = env.register(MockEscrowContract, ());
+        client.set_escrow_contract(&creator, &escrow);
         let freelancer = Address::generate(&env);
         let admin = Address::generate(&env);
 
@@ -1126,6 +1317,7 @@ mod tests {
             &String::from_str(&env, "Test Description"),
             &5000i128,
             &100u64,
+            &token,
         );
 
         let app_id = client.apply_for_bounty(
@@ -1170,6 +1362,9 @@ mod tests {
         let client = BountyContractClient::new(&env, &contract_id);
 
         let creator = Address::generate(&env);
+        let token = Address::generate(&env);
+        let escrow = env.register(MockEscrowContract, ());
+        client.set_escrow_contract(&creator, &escrow);
         let freelancer = Address::generate(&env);
         let admin = Address::generate(&env);
 
@@ -1179,6 +1374,7 @@ mod tests {
             &String::from_str(&env, "Test Description"),
             &5000i128,
             &100u64,
+            &token,
         );
 
         let app_id = client.apply_for_bounty(
@@ -1223,6 +1419,9 @@ mod tests {
         let client = BountyContractClient::new(&env, &contract_id);
 
         let creator = Address::generate(&env);
+        let token = Address::generate(&env);
+        let escrow = env.register(MockEscrowContract, ());
+        client.set_escrow_contract(&creator, &escrow);
         let freelancer = Address::generate(&env);
         let admin = Address::generate(&env);
 
@@ -1232,6 +1431,7 @@ mod tests {
             &String::from_str(&env, "Test Description"),
             &5000i128,
             &100u64,
+            &token,
         );
 
         let app_id = client.apply_for_bounty(
@@ -1274,6 +1474,9 @@ mod tests {
         let client = BountyContractClient::new(&env, &contract_id);
 
         let creator = Address::generate(&env);
+        let token = Address::generate(&env);
+        let escrow = env.register(MockEscrowContract, ());
+        client.set_escrow_contract(&creator, &escrow);
         let freelancer = Address::generate(&env);
 
         let bounty_id = client.create_bounty(
@@ -1282,6 +1485,7 @@ mod tests {
             &String::from_str(&env, "Test Description"),
             &5000i128,
             &100u64,
+            &token,
         );
 
         let app_id = client.apply_for_bounty(
@@ -1560,3 +1764,5 @@ mod tests {
         client.expire_bounty(&bounty_id);
     }
 }
+
+
