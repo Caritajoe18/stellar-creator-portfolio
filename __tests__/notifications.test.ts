@@ -1,16 +1,18 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 /**
  * Notification Service Tests
  * Unit tests, integration tests, and performance tests
  */
 
-import { PushNotificationService } from '@/lib/push-service';
+import { PushNotificationService } from '@/backend/services/notifications/push-service';
 import {
   validateNotificationPayload,
   sanitizeContent,
   generateMessageId,
   calculateRetryDelay,
   DEFAULT_RETRY_CONFIG,
-} from '@/lib/notification-validators';
+} from '@/backend/services/notifications/notification-validators';
+import { NotificationChannel, UserPreferences } from '@/backend/services/notifications/notification-types';
 
 describe('PushNotificationService', () => {
   let service: PushNotificationService;
@@ -30,13 +32,13 @@ describe('PushNotificationService', () => {
         title: 'Test Notification',
         body: 'This is a test',
         data: {},
-        channels: ['firebase'],
+        channels: ['firebase'] as NotificationChannel[] as NotificationChannel[],
         priority: 'normal' as const,
       };
 
       const preferences = {
         userId: 'user123',
-        channels: { firebase: true, onesignal: true, browser: true },
+        channels: { firebase: true, onesignal: true, browser: true, email: true },
         doNotDisturb: false,
         blockedCategories: [],
         unsubscribedCategories: [],
@@ -59,12 +61,12 @@ describe('PushNotificationService', () => {
         title: 'Test',
         body: 'Test body',
         data: {},
-        channels: ['firebase'],
+        channels: ['firebase'] as NotificationChannel[],
       };
 
       const preferences = {
         userId: 'user123',
-        channels: { firebase: false, onesignal: true, browser: true },
+        channels: { firebase: false, onesignal: true, browser: true, email: true },
         doNotDisturb: false,
         blockedCategories: [],
         unsubscribedCategories: [],
@@ -83,7 +85,7 @@ describe('PushNotificationService', () => {
     it('should apply rate limiting', async () => {
       const preferences = {
         userId: 'user123',
-        channels: { firebase: true, onesignal: true, browser: true },
+        channels: { firebase: true, onesignal: true, browser: true, email: true },
         doNotDisturb: false,
         blockedCategories: [],
         unsubscribedCategories: [],
@@ -98,7 +100,7 @@ describe('PushNotificationService', () => {
         title: 'Test',
         body: 'Test',
         data: {},
-        channels: ['firebase'],
+        channels: ['firebase'] as NotificationChannel[],
       };
 
       // Send 30 notifications (max limit per minute)
@@ -122,11 +124,11 @@ describe('PushNotificationService', () => {
           title: `Notification ${i}`,
           body: `Body ${i}`,
           data: {},
-          channels: ['firebase'],
+          channels: ['firebase'] as NotificationChannel[],
         },
         preferences: {
           userId: `user${i}`,
-          channels: { firebase: true, onesignal: true, browser: true },
+          channels: { firebase: true, onesignal: true, browser: true, email: true },
           doNotDisturb: false,
           blockedCategories: [],
           unsubscribedCategories: [],
@@ -150,11 +152,11 @@ describe('PushNotificationService', () => {
           title: 'Test',
           body: 'Test',
           data: {},
-          channels: ['firebase'],
+          channels: ['firebase'] as NotificationChannel[],
         },
         preferences: {
           userId: `user${i}`,
-          channels: { firebase: true, onesignal: true, browser: true },
+          channels: { firebase: true, onesignal: true, browser: true, email: true },
           doNotDisturb: false,
           blockedCategories: [],
           unsubscribedCategories: [],
@@ -177,11 +179,11 @@ describe('PushNotificationService', () => {
           title: 'Test',
           body: 'Test',
           data: {},
-          channels: ['firebase'],
+          channels: ['firebase'] as NotificationChannel[],
         },
         preferences: {
           userId: `user${i}`,
-          channels: { firebase: true, onesignal: true, browser: true },
+          channels: { firebase: true, onesignal: true, browser: true, email: true },
           doNotDisturb: false,
           blockedCategories: [],
           unsubscribedCategories: [],
@@ -230,7 +232,7 @@ describe('PushNotificationService', () => {
     it('should respect quiet hours', () => {
       const preferences = {
         userId: 'user123',
-        channels: { firebase: true, onesignal: true, browser: true },
+        channels: { firebase: true, onesignal: true, browser: true, email: true },
         doNotDisturb: false,
         quietHours: { start: 22, end: 8 },
         blockedCategories: [],
@@ -249,7 +251,7 @@ describe('PushNotificationService', () => {
     it('should respect do not disturb', () => {
       const preferences = {
         userId: 'user123',
-        channels: { firebase: true, onesignal: true, browser: true },
+        channels: { firebase: true, onesignal: true, browser: true, email: true },
         doNotDisturb: true,
         blockedCategories: [],
         unsubscribedCategories: [],
@@ -414,11 +416,11 @@ describe('Performance', () => {
         title: `Notification ${i}`,
         body: `Body ${i}`,
         data: { index: String(i) },
-        channels: ['firebase'],
+        channels: ['firebase'] as NotificationChannel[] as NotificationChannel[],
       },
       preferences: {
         userId: `user${i % 100}`,
-        channels: { firebase: true, onesignal: true, browser: true },
+        channels: { firebase: true, onesignal: true, browser: true, email: true },
         doNotDisturb: false,
         blockedCategories: [],
         unsubscribedCategories: [],
