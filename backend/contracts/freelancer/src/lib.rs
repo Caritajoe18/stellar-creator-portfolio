@@ -131,6 +131,72 @@ impl FreelancerContract {
             .expect("Freelancer not registered")
     }
 
+    /// Updates freelancer profile (name, discipline, bio).
+    /// Only the profile owner (freelancer) can update their profile.
+    ///
+    /// # Parameters
+    /// - `env`: Soroban environment.
+    /// - `freelancer`: Freelancer address (must authenticate).
+    /// - `name`: New name (1-100 characters, non-empty, trimmed).
+    /// - `discipline`: New discipline (1-50 characters, non-empty, trimmed).
+    /// - `bio`: New bio (1-500 characters, non-empty, trimmed).
+    ///
+    /// # Returns
+    /// - `bool`: Always `true` on success.
+    ///
+    /// # Errors
+    /// - Panics if freelancer fails authentication.
+    /// - Panics if freelancer not registered.
+    /// - Panics if name is empty or exceeds 100 characters.
+    /// - Panics if discipline is empty or exceeds 50 characters.
+    /// - Panics if bio is empty or exceeds 500 characters.
+    ///
+    /// # State Changes
+    /// - Updates `name`, `discipline`, and `bio` fields in profile.
+    /// - Emits event with updated fields.
+    pub fn update_profile(
+        env: Env,
+        freelancer: Address,
+        name: String,
+        discipline: String,
+        bio: String,
+    ) -> bool {
+        freelancer.require_auth();
+
+        // Validate name (1-100 characters)
+        assert!(name.len() > 0, "Name cannot be empty");
+        assert!(name.len() <= 100, "Name must be at most 100 characters");
+
+        // Validate discipline (1-50 characters)
+        assert!(discipline.len() > 0, "Discipline cannot be empty");
+        assert!(discipline.len() <= 50, "Discipline must be at most 50 characters");
+
+        // Validate bio (1-500 characters)
+        assert!(bio.len() > 0, "Bio cannot be empty");
+        assert!(bio.len() <= 500, "Bio must be at most 500 characters");
+
+        let key = DataKey::Profile(freelancer.clone());
+        let mut profile: FreelancerProfile = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("Freelancer not registered");
+
+        profile.name = name.clone();
+        profile.discipline = discipline.clone();
+        profile.bio = bio.clone();
+
+        env.storage().persistent().set(&key, &profile);
+
+        env.events().publish(
+            (FL, symbol_short!("upd"), freelancer),
+            (name, discipline, bio),
+        );
+
+        true
+    }
+
+    pub fn update_rating(env: Env, freelancer: Address, new_rating: u32) -> bool {
     /// Updates freelancer's average rating with a new review.
     ///
     /// # Issue #181 — Authorization
@@ -704,5 +770,331 @@ mod tests {
         );
 
         client.update_earnings(&escrow, &freelancer, &0);
+    }
+
+    // -------------------------------------------------------------------------
+    // Tests for update_profile (Issue #177)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_update_profile_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(FreelancerContract, ());
+        let client = FreelancerContractClient::new(&env, &contract_id);
+
+        let freelancer = Address::generate(&env);
+
+        // Register
+        client.register_freelancer(
+            &freelancer,
+            &String::from_str(&env, "Alice"),
+            &String::from_str(&env, "Design"),
+            &String::from_str(&env, "Original bio"),
+        );
+
+        // Verify initial state
+        let profile = client.get_profile(&freelancer);
+        assert_eq!(profile.name, String::from_str(&env, "Alice"));
+        assert_eq!(profile.discipline, String::from_str(&env, "Design"));
+        assert_eq!(profile.bio, String::from_str(&env, "Original bio"));
+
+        // Update profile
+        client.update_profile(
+            &freelancer,
+            &String::from_str(&env, "AliceUpdated"),
+            &String::from_str(&env, "Development"),
+            &String::from_str(&env, "Updated bio"),
+        );
+
+        // Verify updates
+        let profile = client.get_profile(&freelancer);
+        assert_eq!(profile.name, String::from_str(&env, "AliceUpdated"));
+        assert_eq!(profile.discipline, String::from_str(&env, "Development"));
+        assert_eq!(profile.bio, String::from_str(&env, "Updated bio"));
+    }
+
+    #[test]
+    fn test_update_profile_multiple_times() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(FreelancerContract, ());
+        let client = FreelancerContractClient::new(&env, &contract_id);
+
+        let freelancer = Address::generate(&env);
+
+        // Register
+        client.register_freelancer(
+            &freelancer,
+            &String::from_str(&env, "Alice"),
+            &String::from_str(&env, "Design"),
+            &String::from_str(&env, "Bio v1"),
+        );
+
+        // First update
+        client.update_profile(
+            &freelancer,
+            &String::from_str(&env, "Alice2"),
+            &String::from_str(&env, "Design"),
+            &String::from_str(&env, "Bio v2"),
+        );
+
+        let profile = client.get_profile(&freelancer);
+        assert_eq!(profile.name, String::from_str(&env, "Alice2"));
+        assert_eq!(profile.bio, String::from_str(&env, "Bio v2"));
+
+        // Second update
+        client.update_profile(
+            &freelancer,
+            &String::from_str(&env, "Alice3"),
+            &String::from_str(&env, "Development"),
+            &String::from_str(&env, "Bio v3"),
+        );
+
+        let profile = client.get_profile(&freelancer);
+        assert_eq!(profile.name, String::from_str(&env, "Alice3"));
+        assert_eq!(profile.discipline, String::from_str(&env, "Development"));
+        assert_eq!(profile.bio, String::from_str(&env, "Bio v3"));
+    }
+
+    #[test]
+    #[should_panic(expected = "Freelancer not registered")]
+    fn test_update_profile_not_registered() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(FreelancerContract, ());
+        let client = FreelancerContractClient::new(&env, &contract_id);
+
+        let freelancer = Address::generate(&env);
+
+        // Try to update profile without registering
+        client.update_profile(
+            &freelancer,
+            &String::from_str(&env, "Alice"),
+            &String::from_str(&env, "Design"),
+            &String::from_str(&env, "Bio"),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Name cannot be empty")]
+    fn test_update_profile_empty_name() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(FreelancerContract, ());
+        let client = FreelancerContractClient::new(&env, &contract_id);
+
+        let freelancer = Address::generate(&env);
+
+        // Register
+        client.register_freelancer(
+            &freelancer,
+            &String::from_str(&env, "Alice"),
+            &String::from_str(&env, "Design"),
+            &String::from_str(&env, "Bio"),
+        );
+
+        // Try to update with empty name
+        client.update_profile(
+            &freelancer,
+            &String::from_str(&env, ""),
+            &String::from_str(&env, "Design"),
+            &String::from_str(&env, "Bio"),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Discipline cannot be empty")]
+    fn test_update_profile_empty_discipline() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(FreelancerContract, ());
+        let client = FreelancerContractClient::new(&env, &contract_id);
+
+        let freelancer = Address::generate(&env);
+
+        // Register
+        client.register_freelancer(
+            &freelancer,
+            &String::from_str(&env, "Alice"),
+            &String::from_str(&env, "Design"),
+            &String::from_str(&env, "Bio"),
+        );
+
+        // Try to update with empty discipline
+        client.update_profile(
+            &freelancer,
+            &String::from_str(&env, "Alice"),
+            &String::from_str(&env, ""),
+            &String::from_str(&env, "Bio"),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Bio cannot be empty")]
+    fn test_update_profile_empty_bio() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(FreelancerContract, ());
+        let client = FreelancerContractClient::new(&env, &contract_id);
+
+        let freelancer = Address::generate(&env);
+
+        // Register
+        client.register_freelancer(
+            &freelancer,
+            &String::from_str(&env, "Alice"),
+            &String::from_str(&env, "Design"),
+            &String::from_str(&env, "Bio"),
+        );
+
+        // Try to update with empty bio
+        client.update_profile(
+            &freelancer,
+            &String::from_str(&env, "Alice"),
+            &String::from_str(&env, "Design"),
+            &String::from_str(&env, ""),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Name must be at most 100 characters")]
+    fn test_update_profile_name_too_long() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(FreelancerContract, ());
+        let client = FreelancerContractClient::new(&env, &contract_id);
+
+        let freelancer = Address::generate(&env);
+
+        // Register
+        client.register_freelancer(
+            &freelancer,
+            &String::from_str(&env, "Alice"),
+            &String::from_str(&env, "Design"),
+            &String::from_str(&env, "Bio"),
+        );
+
+        // Create a name that's 101 characters long
+        let long_name = String::from_str(&env, "a123456789a123456789a123456789a123456789a123456789a123456789a123456789a123456789a123456789a123456789a");
+
+        // Try to update with name exceeding 100 characters
+        client.update_profile(
+            &freelancer,
+            &long_name,
+            &String::from_str(&env, "Design"),
+            &String::from_str(&env, "Bio"),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Discipline must be at most 50 characters")]
+    fn test_update_profile_discipline_too_long() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(FreelancerContract, ());
+        let client = FreelancerContractClient::new(&env, &contract_id);
+
+        let freelancer = Address::generate(&env);
+
+        // Register
+        client.register_freelancer(
+            &freelancer,
+            &String::from_str(&env, "Alice"),
+            &String::from_str(&env, "Design"),
+            &String::from_str(&env, "Bio"),
+        );
+
+        // Create a discipline that's 51 characters long
+        let long_discipline = String::from_str(&env, "a1234567890a1234567890a1234567890a1234567890a12345");
+
+        // Try to update with discipline exceeding 50 characters
+        client.update_profile(
+            &freelancer,
+            &String::from_str(&env, "Alice"),
+            &long_discipline,
+            &String::from_str(&env, "Bio"),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Bio must be at most 500 characters")]
+    fn test_update_profile_bio_too_long() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(FreelancerContract, ());
+        let client = FreelancerContractClient::new(&env, &contract_id);
+
+        let freelancer = Address::generate(&env);
+
+        // Register
+        client.register_freelancer(
+            &freelancer,
+            &String::from_str(&env, "Alice"),
+            &String::from_str(&env, "Design"),
+            &String::from_str(&env, "Bio"),
+        );
+
+        // Create a bio that's 501 characters long
+        let long_bio = String::from_str(&env, "a1234567890a1234567890a1234567890a1234567890a1234567890a1234567890a1234567890a1234567890a1234567890a1234567890a1234567890a1234567890a1234567890a1234567890a1234567890a1234567890a1234567890a1234567890a1234567890a1234567890a1234567890a1234567890a1234567890a1234567890a1234567890a1234567890a1234567890a1234567890a1234567890a1234567890a1");
+
+        // Try to update with bio exceeding 500 characters
+        client.update_profile(
+            &freelancer,
+            &String::from_str(&env, "Alice"),
+            &String::from_str(&env, "Design"),
+            &long_bio,
+        );
+    }
+
+    #[test]
+    fn test_update_profile_preserves_other_fields() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(FreelancerContract, ());
+        let client = FreelancerContractClient::new(&env, &contract_id);
+
+        let freelancer = Address::generate(&env);
+        let admin = Address::generate(&env);
+
+        // Register
+        client.register_freelancer(
+            &freelancer,
+            &String::from_str(&env, "Alice"),
+            &String::from_str(&env, "Design"),
+            &String::from_str(&env, "Bio"),
+        );
+
+        // Rate the freelancer
+        client.update_rating(&freelancer, &5);
+
+        // Verify
+        client.verify_freelancer(&admin, &freelancer);
+
+        // Add a skill
+        let skill = String::from_str(&env, "Rust");
+        client.add_skill(&freelancer, &skill);
+
+        let profile_before = client.get_profile(&freelancer);
+        assert_eq!(profile_before.rating, 5);
+        assert!(profile_before.verified);
+        assert_eq!(profile_before.skills.len(), 1);
+
+        // Update profile
+        client.update_profile(
+            &freelancer,
+            &String::from_str(&env, "AliceUpdated"),
+            &String::from_str(&env, "Development"),
+            &String::from_str(&env, "Updated bio"),
+        );
+
+        // Verify other fields are preserved
+        let profile_after = client.get_profile(&freelancer);
+        assert_eq!(profile_after.rating, 5);
+        assert!(profile_after.verified);
+        assert_eq!(profile_after.skills.len(), 1);
+        assert_eq!(profile_after.name, String::from_str(&env, "AliceUpdated"));
+        assert_eq!(profile_after.discipline, String::from_str(&env, "Development"));
+        assert_eq!(profile_after.bio, String::from_str(&env, "Updated bio"));
     }
 }
